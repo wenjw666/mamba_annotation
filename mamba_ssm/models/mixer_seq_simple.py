@@ -25,7 +25,6 @@ try:
 except ImportError:
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
 
-
 def create_block(
     d_model,
     d_intermediate,
@@ -40,6 +39,12 @@ def create_block(
     device=None,
     dtype=None,
 ):
+    """
+    用于创建Mamba模型中的一个模块（Block），它封装了Mamba单元和规范化层。
+    函数参数包括模型维度、状态空间模型配置、规范化层的epsilon值、是否使用RMS规范化、是否以32位浮点数处理残差连接等。
+    通过使用 partial 函数， create_block 可以根据给定的配置灵活地定义一个模块
+
+    """
     if ssm_cfg is None:
         ssm_cfg = {}
     if attn_layer_idx is None:
@@ -47,6 +52,8 @@ def create_block(
     if attn_cfg is None:
         attn_cfg = {}
     factory_kwargs = {"device": device, "dtype": dtype}
+    
+    # 选择mamba还是多头注意力
     if layer_idx not in attn_layer_idx:
         # Create a copy of the config to modify
         ssm_cfg = copy.deepcopy(ssm_cfg) if ssm_cfg is not None else {}
@@ -64,12 +71,16 @@ def create_block(
     norm_cls = partial(
         nn.LayerNorm if not rms_norm else RMSNorm, eps=norm_epsilon, **factory_kwargs
     )
+
+    # 选择是否门控
     if d_intermediate == 0:
         mlp_cls = nn.Identity
     else:
         mlp_cls = partial(
-            GatedMLP, hidden_features=d_intermediate, out_features=d_model, **factory_kwargs
+            GatedMLP, hidden_features=d_intermediate, out_features=d_model, **factory_kwargs # 门控
         )
+
+
     block = Block(
         d_model,
         mixer_cls,
@@ -90,12 +101,18 @@ def _init_weights(
     rescale_prenorm_residual=True,
     n_residuals_per_layer=1,  # Change to 2 if we have MLP
 ):
+    """
+    定义了一种权重初始化方法，参考了OpenAI GPT-2的初始化方案。目的是在模型初始化时调整权重，以提高深度模型的稳定性和性能。
+    特别地，对于残差连接的权重，通过特定的比例因子进行缩放，以考虑到残差路径在模型深度中的累积效应。
+
+    """
+    # 如果模块有偏置项, 并且偏置项没有"_no_reinit"属性或该属性为False, 则将偏置项初始化为零。
     if isinstance(module, nn.Linear):
         if module.bias is not None:
             if not getattr(module.bias, "_no_reinit", False):
-                nn.init.zeros_(module.bias)
+                nn.init.zeros_(module.bias) 
     elif isinstance(module, nn.Embedding):
-        nn.init.normal_(module.weight, std=initializer_range)
+        nn.init.normal_(module.weight, std=initializer_range) # 将嵌入权重初始化为均值为0 ,标准差为initializer_range的正态分布
 
     if rescale_prenorm_residual:
         # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
@@ -105,11 +122,11 @@ def _init_weights(
         #
         # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
         for name, p in module.named_parameters():
-            if name in ["out_proj.weight", "fc2.weight"]:
+            if name in ["out_proj.weight", "fc2.weight"]: # 对于名为"out_proj.weight"或"fc2.weight"的参数, 会进行特殊的缩放初始化
                 # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
                 # Following Pytorch init, except scale by 1/sqrt(2 * n_layer)
                 # We need to reinit p since this code could be called multiple times
-                # Having just p *= scale would repeatedly scale it down
+                # Having just p *= scale would repeatedly scale it down 累积效应
                 nn.init.kaiming_uniform_(p, a=math.sqrt(5))
                 with torch.no_grad():
                     p /= math.sqrt(n_residuals_per_layer * n_layer)
@@ -168,10 +185,12 @@ class MixerModel(nn.Module):
             ]
         )
 
+        # Norm层
         self.norm_f = (nn.LayerNorm if not rms_norm else RMSNorm)(
             d_model, eps=norm_epsilon, **factory_kwargs
         )
 
+        #权重初始化
         self.apply(
             partial(
                 _init_weights,
@@ -182,23 +201,34 @@ class MixerModel(nn.Module):
         )
 
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
+        """
+        为每个层分配推理缓存, 返回一个字典, 将层的索引映射到对应的缓存
+        """
         return {
             i: layer.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
             for i, layer in enumerate(self.layers)
         }
 
     def forward(self, input_ids, inference_params=None, **mixer_kwargs):
-        hidden_states = self.embedding(input_ids)
+        """
+        input_ids:输入的token ID序列。
+        inference_params: 推理参数,默认为None。
+        """
+        hidden_states = self.embedding(input_ids) # 通过词嵌入层self.embedding映射到隐藏状态hidden_states
         residual = None
         for layer in self.layers:
             hidden_states, residual = layer(
                 hidden_states, residual, inference_params=inference_params, **mixer_kwargs
             )
+
+        
         if not self.fused_add_norm:
-            residual = (hidden_states + residual) if residual is not None else hidden_states
-            hidden_states = self.norm_f(residual.to(dtype=self.norm_f.weight.dtype))
+            # LN -> Attn / MLP -> Add
+            residual = (hidden_states + residual) if residual is not None else hidden_states # 将隐藏状态与残差相加得到新的残差, 如果残差为None, 则直接使用隐藏状态
+            hidden_states = self.norm_f(residual.to(dtype=self.norm_f.weight.dtype)) # 对新的残差应用最后一层的归一化层self.norm_f
         else:
             # Set prenorm=False here since we don't need the residual
+            # Add -> LN -> Attn / MLP / Mixer
             hidden_states = layer_norm_fn(
                 hidden_states,
                 self.norm_f.weight,
@@ -207,7 +237,7 @@ class MixerModel(nn.Module):
                 residual=residual,
                 prenorm=False,
                 residual_in_fp32=self.residual_in_fp32,
-                is_rms_norm=isinstance(self.norm_f, RMSNorm)
+                is_rms_norm=isinstance(self.norm_f, RMSNorm) # 调用融合函数对隐藏状态进行归一化, 同时进行残差连接和数据类型转换, 设置prenorm=False表示在归一化之前进行残差连接
             )
         return hidden_states
 

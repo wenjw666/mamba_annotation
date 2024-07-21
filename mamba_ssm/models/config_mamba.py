@@ -13,6 +13,6 @@ class MambaConfig:
     attn_cfg: dict = field(default_factory=dict)
     rms_norm: bool = True #是否使用 RMSNorm 替代传统的 LayerNorm
     residual_in_fp32: bool = True # 是否在训练时以 float32 格式存储残差连接。这可以减少数值误差, 提高模型稳定性。这里设为 True
-    fused_add_norm: bool = True
-    pad_vocab_size_multiple: int = 8
-    tie_embeddings: bool = True
+    fused_add_norm: bool = True # 是否融合残差连接和归一化的计算。这可以减少内存访问, 提高训练速度
+    pad_vocab_size_multiple: int = 8 # 将词表大小填充到该值的整数倍。这可以优化嵌入矩阵的内存布局
+    tie_embeddings: bool = True #是否共享输入嵌入和输出嵌入的参数。这可以减少模型参数量
