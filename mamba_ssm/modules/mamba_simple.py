@@ -48,6 +48,19 @@ class Mamba(nn.Module):
         device=None,
         dtype=None,
     ):
+        """
+        d_state: S4D状态的维度，默认为16
+        expand: 内部维度扩展的倍数，默认为2。内部维度为d_model * expand
+        dt_rank: 用于计算Δt的低秩矩阵的秩。如果设置为"auto"，则自动计算为d_model / 16。
+        dt_min和dt_max: 初始化Δt的范围，默认为[0.001, 0.1]
+        dt_init: Δt的初始化方式，可以是"random"或"constant"。默认为"random"
+        dt_scale: 用于初始化Δt projection矩阵的比例因子，默认为1.0
+        dt_init_floor: Δt初始化时的下限，默认为1e-4
+        conv_bias: 1D卷积层是否使用bias，默认为True
+        bias: 输入和输出projection层是否使用bias，默认为False
+        use_fast_path: 是否使用优化的kernel，默认为True。优化的kernel可以提高性能
+        layer_idx: 当前层的索引，用于推理时缓存状态。默认为None
+        """
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
         self.d_model = d_model
@@ -209,13 +222,13 @@ class Mamba(nn.Module):
         dtype = hidden_states.dtype
         assert hidden_states.shape[1] == 1, "Only support decoding with 1 token at a time for now"
         xz = self.in_proj(hidden_states.squeeze(1))  # (B 2D)
-        x, z = xz.chunk(2, dim=-1)  # (B D)
+        x, z = xz.chunk(2, dim=-1)  # (B D) 沿最后一个维度分成两部分
 
         # Conv step
         if causal_conv1d_update is None:
             conv_state.copy_(torch.roll(conv_state, shifts=-1, dims=-1))  # Update state (B D W)
             conv_state[:, :, -1] = x
-            x = torch.sum(conv_state * rearrange(self.conv1d.weight, "d 1 w -> d w"), dim=-1)  # (B D)
+            x = torch.sum(conv_state * rearrange(self.conv1d.weight, "d 1 w -> d w"), dim=-1)  # (B D)  与卷积核的权重进行逐元素相乘, 然后沿最后一个维度求和, 得到卷积的输出
             if self.conv1d.bias is not None:
                 x = x + self.conv1d.bias
             x = self.act(x).to(dtype=dtype)

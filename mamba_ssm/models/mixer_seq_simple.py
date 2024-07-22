@@ -154,7 +154,7 @@ class MixerModel(nn.Module):
         super().__init__()
         self.residual_in_fp32 = residual_in_fp32
 
-        self.embedding = nn.Embedding(vocab_size, d_model, **factory_kwargs)
+        self.embedding = nn.Embedding(vocab_size, d_model, **factory_kwargs) 
 
         # We change the order of residual and layer norm:
         # Instead of LN -> Attn / MLP -> Add, we do:
@@ -214,7 +214,7 @@ class MixerModel(nn.Module):
         input_ids:输入的token ID序列。
         inference_params: 推理参数,默认为None。
         """
-        hidden_states = self.embedding(input_ids) # 通过词嵌入层self.embedding映射到隐藏状态hidden_states
+        hidden_states = self.embedding(input_ids) # 通过词嵌入层self.embedding映射到隐藏状态hidden_states  (batch_size, sequence_length)-》(batch_size, sequence_length, d_model)
         residual = None
         for layer in self.layers:
             hidden_states, residual = layer(
@@ -267,7 +267,7 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
 
         super().__init__()
         if vocab_size % pad_vocab_size_multiple != 0:
-            vocab_size += pad_vocab_size_multiple - (vocab_size % pad_vocab_size_multiple)
+            vocab_size += pad_vocab_size_multiple - (vocab_size % pad_vocab_size_multiple) # 如果vocab_size不是pad_vocab_size_multiple的倍数, 则将其向上取整到最近的倍数
         self.backbone = MixerModel(
             d_model=d_model,
             n_layer=n_layer,
@@ -282,7 +282,7 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
             residual_in_fp32=residual_in_fp32,
             **factory_kwargs,
         )
-        self.lm_head = nn.Linear(d_model, vocab_size, bias=False, **factory_kwargs)
+        self.lm_head = nn.Linear(d_model, vocab_size, bias=False, **factory_kwargs) # 创建语言模型头self.lm_head, 它是一个nn.Linear层, 将隐藏状态映射到词表大小的输出
 
         # Initialize weights and apply final processing
         self.apply(
@@ -291,12 +291,12 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
                 n_layer=n_layer,
                 **(initializer_cfg if initializer_cfg is not None else {}),
             )
-        )
+        ) # 对模型的所有子模块应用_init_weights函数进行权重初始化
         self.tie_weights()
 
     def tie_weights(self):
         if self.config.tie_embeddings:
-            self.lm_head.weight = self.backbone.embedding.weight
+            self.lm_head.weight = self.backbone.embedding.weight # 语言模型头的权重与词嵌入层的权重绑定
 
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return self.backbone.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
@@ -310,15 +310,15 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
         lm_logits = self.lm_head(hidden_states)
-        CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
+        CausalLMOutput = namedtuple("CausalLMOutput", ["logits"]) # 使用namedtuple创建一个名为CausalLMOutput的命名元组, 包含logits字段
         return CausalLMOutput(logits=lm_logits)
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name, device=None, dtype=None, **kwargs):
-        config_data = load_config_hf(pretrained_model_name)
+    def from_pretrained(cls, pretrained_model_name, device=None, dtype=None, **kwargs): # cls 代表该类
+        config_data = load_config_hf(pretrained_model_name) # 加载预训练模型的配置数据
         config = MambaConfig(**config_data)
         model = cls(config, device=device, dtype=dtype, **kwargs)
-        model.load_state_dict(load_state_dict_hf(pretrained_model_name, device=device, dtype=dtype))
+        model.load_state_dict(load_state_dict_hf(pretrained_model_name, device=device, dtype=dtype)) # 加载预训练模型的权重
         return model
 
     def save_pretrained(self, save_directory):
@@ -330,10 +330,10 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         os.makedirs(save_directory, exist_ok=True)
 
         # Save the model's state_dict
-        model_path = os.path.join(save_directory, 'pytorch_model.bin')
+        model_path = os.path.join(save_directory, 'pytorch_model.bin') # 模型的状态字典保存到目录下的'pytorch_model.bin'文件中
         torch.save(self.state_dict(), model_path)
 
         # Save the configuration of the model
-        config_path = os.path.join(save_directory, 'config.json')
+        config_path = os.path.join(save_directory, 'config.json') # 模型的配置对象转换为字典, 并将其保存到目录下的'config.json'文件中
         with open(config_path, 'w') as f:
             json.dump(self.config.__dict__, f, indent=4)
