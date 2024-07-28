@@ -50,9 +50,10 @@ else:
     tokens = tokenizer(args.prompt, return_tensors="pt")
     input_ids = tokens.input_ids.to(device=device)
     attn_mask = tokens.attention_mask.to(device=device)
-max_length = input_ids.shape[1] + args.genlen
+max_length = input_ids.shape[1] + args.genlen # prompt length + generation length
 
 if is_mamba:
+    ### 此处调用推理
     fn = lambda: model.generate(
         input_ids=input_ids,
         max_length=max_length,

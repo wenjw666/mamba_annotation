@@ -82,7 +82,7 @@ class Mamba(nn.Module):
             groups=self.d_inner,
             padding=d_conv - 1,
             **factory_kwargs,
-        )
+        )   
 
         self.activation = "silu"
         self.act = nn.SiLU()
@@ -136,6 +136,7 @@ class Mamba(nn.Module):
         """
         batch, seqlen, dim = hidden_states.shape
 
+        # 头一个mamba块后走这个分支？？
         conv_state, ssm_state = None, None
         if inference_params is not None:
             conv_state, ssm_state = self._get_states_from_cache(inference_params, batch)
@@ -143,7 +144,7 @@ class Mamba(nn.Module):
                 # The states are updated inplace
                 out, _, _ = self.step(hidden_states, conv_state, ssm_state)
                 return out
-
+            
         # We do matmul and transpose BLH -> HBL at the same time
         xz = rearrange(
             self.in_proj.weight @ rearrange(hidden_states, "b l d -> d (b l)"),
@@ -155,7 +156,7 @@ class Mamba(nn.Module):
 
         A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
         # In the backward pass we write dx and dz next to each other to avoid torch.cat
-        if self.use_fast_path and causal_conv1d_fn is not None and inference_params is None:  # Doesn't support outputting the states
+        if self.use_fast_path and causal_conv1d_fn is not None and inference_params is None:  # Doesn't support outputting the states 是可以选择性使用上一个ssm states吗
             out = mamba_inner_fn(
                 xz,
                 self.conv1d.weight,
@@ -222,7 +223,7 @@ class Mamba(nn.Module):
         dtype = hidden_states.dtype
         assert hidden_states.shape[1] == 1, "Only support decoding with 1 token at a time for now"
         xz = self.in_proj(hidden_states.squeeze(1))  # (B 2D)
-        x, z = xz.chunk(2, dim=-1)  # (B D) 沿最后一个维度分成两部分
+        x, z = xz.chunk(2, dim=-1)  # (B L D) 沿最后一个维度分成两部分
 
         # Conv step
         if causal_conv1d_update is None:

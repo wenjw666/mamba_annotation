@@ -214,7 +214,7 @@ class MixerModel(nn.Module):
         input_ids:输入的token ID序列。
         inference_params: 推理参数,默认为None。
         """
-        hidden_states = self.embedding(input_ids) # 通过词嵌入层self.embedding映射到隐藏状态hidden_states  (batch_size, sequence_length)-》(batch_size, sequence_length, d_model)
+        hidden_states = self.embedding(input_ids) # 通过词嵌入层self.embedding映射到隐藏状态hidden_states  (batch_size, sequence_length,vocab_size)-》(batch_size, sequence_length, d_model)
         residual = None
         for layer in self.layers:
             hidden_states, residual = layer(
@@ -308,8 +308,8 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         """
         hidden_states = self.backbone(input_ids, inference_params=inference_params, **mixer_kwargs)
         if num_last_tokens > 0:
-            hidden_states = hidden_states[:, -num_last_tokens:]
-        lm_logits = self.lm_head(hidden_states)
+            hidden_states = hidden_states[:, -num_last_tokens:] # 取最后一个token B 1 dm
+        lm_logits = self.lm_head(hidden_states) # B 1 vs
         CausalLMOutput = namedtuple("CausalLMOutput", ["logits"]) # 使用namedtuple创建一个名为CausalLMOutput的命名元组, 包含logits字段
         return CausalLMOutput(logits=lm_logits)
 

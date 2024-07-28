@@ -113,30 +113,30 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     batch, dim, dstate = u.shape[0], A.shape[0], A.shape[1]
     is_variable_B = B.dim() >= 3
     is_variable_C = C.dim() >= 3
-    if A.is_complex():
+    if A.is_complex(): # ？？
         if is_variable_B:
-            B = torch.view_as_complex(rearrange(B.float(), "... (L two) -> ... L two", two=2))
+            B = torch.view_as_complex(rearrange(B.float(), "... (L two) -> ... L two", two=2)) 
         if is_variable_C:
-            C = torch.view_as_complex(rearrange(C.float(), "... (L two) -> ... L two", two=2))
+            C = torch.view_as_complex(rearrange(C.float(), "... (L two) -> ... L two", two=2)) # 将BC转为复数张量 还是原来的维度
     else:
         B = B.float()
-        C = C.float()
+        C = C.float() # 3维
     x = A.new_zeros((batch, dim, dstate))
     ys = []
     deltaA = torch.exp(torch.einsum('bdl,dn->bdln', delta, A))
-    if not is_variable_B:
+    if not is_variable_B: # c(D N)
         deltaB_u = torch.einsum('bdl,dn,bdl->bdln', delta, B, u)
     else:
-        if B.dim() == 3:
+        if B.dim() == 3: # r(B N L)  
             deltaB_u = torch.einsum('bdl,bnl,bdl->bdln', delta, B, u)
-        else:
-            B = repeat(B, "B G N L -> B (G H) N L", H=dim // B.shape[1])
-            deltaB_u = torch.einsum('bdl,bdnl,bdl->bdln', delta, B, u)
+        else: # r(B G N L)
+            B = repeat(B, "B G N L -> B (G H) N L", H=dim // B.shape[1]) # H= D/G G*H=D bdnl
+            deltaB_u = torch.einsum('bdl,bdnl,bdl->bdln', delta, B, u) # B*u
     if is_variable_C and C.dim() == 4:
         C = repeat(C, "B G N L -> B (G H) N L", H=dim // C.shape[1])
     last_state = None
-    for i in range(u.shape[2]):
-        x = deltaA[:, :, i] * x + deltaB_u[:, :, i]
+    for i in range(u.shape[2]): # 遍历序列
+        x = deltaA[:, :, i] * x + deltaB_u[:, :, i] # h = ah'+ bx bd*bdn+bd
         if not is_variable_C:
             y = torch.einsum('bdn,dn->bd', x, C)
         else:
@@ -150,7 +150,7 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
             y = y.real * 2
         ys.append(y)
     y = torch.stack(ys, dim=2) # (batch dim L)
-    out = y if D is None else y + u * rearrange(D, "d -> d 1")
+    out = y if D is None else y + u * rearrange(D, "d -> d 1") # bdl + bdl*d1
     if z is not None:
         out = out * F.silu(z)
     out = out.to(dtype=dtype_in)

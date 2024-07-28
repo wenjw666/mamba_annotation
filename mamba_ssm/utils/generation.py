@@ -142,9 +142,10 @@ def decode(
 
     Arguments:
         input_ids: (batch, seq_len)
+        model: MambaLMHeadModel等语言模型，GenerationMixin调用中为self参数
         max_length: int
         teacher_outputs (optional): (batch, seq_len). If provided, instead of sampling from the
-            logits, the next token is taken from the teacher_outputs. Useful for testing.
+            logits, the next token is taken from the teacher_outputs. Useful for testing. 示例输出？
     Returns: GreedySearchDecoderOnlyOutput or SampleDecoderOnlyOutput, with the following fields:
         sequences: (batch, max_length)
         scores: tuples of (batch, vocab_size)
@@ -155,7 +156,7 @@ def decode(
     batch_size, seqlen_og = input_ids.shape
     teacher_output_len = teacher_outputs.shape[1] if teacher_outputs is not None else 0
     if cg:
-        if not hasattr(model, "_decoding_cache"):
+        if not hasattr(model, "_decoding_cache"): # 有无成员
             model._decoding_cache = None
         model._decoding_cache = update_graph_cache(
             model,
@@ -170,6 +171,15 @@ def decode(
         inference_params = InferenceParams(max_seqlen=max_length, max_batch_size=batch_size)
 
     def get_logits(input_ids, inference_params):
+        """模型推理获得logits
+
+        Args:
+            input_ids (_type_): _description_
+            inference_params (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
         decoding = inference_params.seqlen_offset > 0
         if decoding:
             position_ids = torch.full(
@@ -180,13 +190,14 @@ def decode(
             )
         else:
             position_ids = None
-        if not cg or not decoding:
+            
+        if not cg or not decoding: # 第一次输入
             logits = model(
-                input_ids,
+                input_ids, #(batch, seq_len)
                 position_ids=position_ids,
                 inference_params=inference_params,
                 num_last_tokens=1,
-            ).logits.squeeze(dim=1)
+            ).logits.squeeze(dim=1) # B 1 vs -> B vs
         else:
             logits = model._decoding_cache.run(
                 input_ids, position_ids, inference_params.seqlen_offset
@@ -215,22 +226,24 @@ def decode(
 
     if enable_timing:
         start.record()
-    scores, sequences = [], [input_ids]
+        
+    scores, sequences = [], [input_ids] # [tensor[B,L]] 
     sequences_cat = input_ids
     while not should_stop(sequences[-1], inference_params):
-        scores.append(get_logits(sequences[-1], inference_params))
-        inference_params.seqlen_offset += sequences[-1].shape[1]
+        scores.append(get_logits(sequences[-1], inference_params)) #[tensor[B vs]]
+        inference_params.seqlen_offset += sequences[-1].shape[1] # offset加当前序列长度，按照sampled_tokens的规模不断迭代累加直到满足停止条件
         if repetition_penalty == 1.0:
-            sampled_tokens = sample_tokens(scores[-1], inference_params)
+            sampled_tokens = sample_tokens(scores[-1], inference_params) # 无重复惩罚 
         else:
             logits = modify_logit_for_repetition_penalty(
                 scores[-1].clone(), sequences_cat, repetition_penalty
             )
             sampled_tokens = sample_tokens(logits, inference_params)
             sequences_cat = torch.cat([sequences_cat, sampled_tokens], dim=1)
-        sequences.append(sampled_tokens)
+        sequences.append(sampled_tokens) # 采样一个词？  sampled_tokens：b 1
         if streamer is not None:
             streamer.put(sampled_tokens.cpu())
+            
     if streamer is not None:
         streamer.end()
     if enable_timing:
@@ -238,7 +251,7 @@ def decode(
         torch.cuda.synchronize()
         print(f"Prompt processing + decoding time: {(start.elapsed_time(end)):.0f}ms")
     output_cls = GreedySearchDecoderOnlyOutput if top_k == 1 else SampleDecoderOnlyOutput
-    return output_cls(sequences=torch.cat(sequences, dim=1), scores=tuple(scores))
+    return output_cls(sequences=torch.cat(sequences, dim=1), scores=tuple(scores)) # sequences：tensor[B,N*L]
 
 
 class GenerationMixin:
@@ -288,6 +301,21 @@ def update_graph_cache(
     dtype=None,
     n_warmups=2,
 ):
+    """创建和更新CUDA图缓存
+
+    Args:
+        model (_type_): _description_
+        cache (_type_): _description_
+        batch_size (_type_): _description_
+        seqlen_og (_type_): _description_
+        max_seqlen (_type_): _description_
+        decoding_seqlens (tuple, optional): _description_. Defaults to (1,).
+        dtype (_type_, optional): _description_. Defaults to None.
+        n_warmups (int, optional): _description_. Defaults to 2.
+
+    Returns:
+        _type_: _description_
+    """
     if cache is None:
         cache = DecodingCGCache()
     param_example = next(iter(model.parameters()))
@@ -340,6 +368,20 @@ def update_graph_cache(
 def capture_graph(
     model, inference_params, batch_size, max_seqlen, decoding_seqlen=1, mempool=None, n_warmups=2
 ):
+    """捕获计算图
+
+    Args:
+        model (_type_): _description_
+        inference_params (_type_): _description_
+        batch_size (_type_): _description_
+        max_seqlen (_type_): _description_
+        decoding_seqlen (int, optional): _description_. Defaults to 1.
+        mempool (_type_, optional): _description_. Defaults to None.
+        n_warmups (int, optional): _description_. Defaults to 2.
+
+    Returns:
+        _type_: _description_
+    """
     device = next(iter(model.parameters())).device
     input_ids = torch.full((batch_size, decoding_seqlen), 0, dtype=torch.long, device=device)
     position_ids = torch.full((batch_size, decoding_seqlen), 0, dtype=torch.long, device=device)

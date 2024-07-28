@@ -28,25 +28,49 @@ class Mamba2Simple(nn.Module):
         d_state=64,
         d_conv=4,
         conv_init=None,
-        expand=2,
-        headdim=128,
-        ngroups=1,
-        A_init_range=(1, 16),
+        expand=2, 
+        headdim=128, # new
+        ngroups=1, # new
+        A_init_range=(1, 16), # new
         dt_min=0.001,
         dt_max=0.1,
         dt_init_floor=1e-4,
-        dt_limit=(0.0, float("inf")),
-        learnable_init_states=False,
-        activation="swish",
+        dt_limit=(0.0, float("inf")), # new
+        learnable_init_states=False, # new
+        activation="swish", # new
         bias=False,
         conv_bias=True,
         # Fused kernel and sharding options
-        chunk_size=256,
-        use_mem_eff_path=True,
+        chunk_size=256, # new
+        use_mem_eff_path=True, # new
         layer_idx=None,  # Absorb kwarg for general module
         device=None,
         dtype=None,
     ):
+        """
+
+        Args:
+            d_model (_type_): 模型维度
+            d_state (int, optional): 状态维度. Defaults to 64.
+            d_conv (int, optional): 卷积参数. Defaults to 4.
+            conv_init (_type_, optional): 新 . Defaults to None.
+            expand (int, optional): 扩展因子. Defaults to 2.
+            headdim (int, optional): 单个头维度. Defaults to 128.
+            ngroups (int, optional): _description_. Defaults to 1.
+            A_init_range (tuple, optional): A矩阵值初始化范围. Defaults to (1, 16).
+            dt_min (float, optional): _description_. Defaults to 0.001.
+            dt_max (float, optional): _description_. Defaults to 0.1.
+            dt_init_floor (_type_, optional): _description_. Defaults to 1e-4.
+            dt_limit (tuple, optional): dt取值范围. Defaults to (0.0, float("inf")).
+            learnable_init_states (bool, optional): _description_. Defaults to False.
+            activation (str, optional): _description_. Defaults to "swish".
+            bias (bool, optional): _description_. Defaults to False.
+            conv_bias (bool, optional): _description_. Defaults to True.
+            chunk_size (int, optional): _description_. Defaults to 256.
+            use_mem_eff_path (bool, optional): _description_. Defaults to True.
+            layer_idx (_type_, optional): _description_. Defaults to None.
+            dtype (_type_, optional): _description_. Defaults to None.
+        """
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
         self.d_model = d_model
@@ -58,7 +82,7 @@ class Mamba2Simple(nn.Module):
         self.headdim = headdim
         self.ngroups = ngroups
         assert self.d_inner % self.headdim == 0
-        self.nheads = self.d_inner // self.headdim
+        self.nheads = self.d_inner // self.headdim ##
         self.dt_limit = dt_limit
         self.learnable_init_states = learnable_init_states
         self.activation = activation
@@ -66,7 +90,7 @@ class Mamba2Simple(nn.Module):
         self.use_mem_eff_path = use_mem_eff_path
         self.layer_idx = layer_idx
 
-        # Order: [z, x, B, C, dt]
+        # Order: [z, x, B, C, dt] B:[]
         d_in_proj = 2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
         self.in_proj = nn.Linear(self.d_model, d_in_proj, bias=bias, **factory_kwargs)
 
@@ -81,10 +105,11 @@ class Mamba2Simple(nn.Module):
             **factory_kwargs,
         )
         if self.conv_init is not None:
-            nn.init.uniform_(self.conv1d.weight, -self.conv_init, self.conv_init)
+            nn.init.uniform_(self.conv1d.weight, -self.conv_init, self.conv_init) # 将 self.conv1d 这一维卷积层的权重初始化为均匀分布在 -self.conv_init 和 self.conv_init 之间的随机值
         # self.conv1d.weight._no_weight_decay = True
 
         if self.learnable_init_states:
+            # [nheads,headdim]
             self.init_states = nn.Parameter(torch.zeros(self.nheads, self.headdim, self.d_state, **factory_kwargs))
             self.init_states._no_weight_decay = True
 
@@ -104,6 +129,9 @@ class Mamba2Simple(nn.Module):
         self.dt_bias._no_weight_decay = True
 
         # A parameter
+        # 创建一个大小为 self.nheads 的张量 A，
+        # 并使用范围为 A_init_range 的均匀分布对其进行初始化。
+        # 张量 A 中的每个元素都会在 A_init_range 指定的范围内均匀随机分布
         assert A_init_range[0] > 0 and A_init_range[1] >= A_init_range[0]
         A = torch.empty(self.nheads, dtype=torch.float32, device=device).uniform_(*A_init_range)
         A_log = torch.log(A).to(dtype=dtype)
@@ -111,7 +139,7 @@ class Mamba2Simple(nn.Module):
         # self.register_buffer("A_log", torch.zeros(self.nheads, dtype=torch.float32, device=device), persistent=True)
         self.A_log._no_weight_decay = True
 
-        # D "skip" parameter
+        # D "skip" parameter [nheads]
         self.D = nn.Parameter(torch.ones(self.nheads, device=device))
         self.D._no_weight_decay = True
 
@@ -129,8 +157,8 @@ class Mamba2Simple(nn.Module):
         batch, seqlen, dim = u.shape
 
         zxbcdt = self.in_proj(u)  # (B, L, d_in_proj)
-        A = -torch.exp(self.A_log)  # (nheads) or (d_inner, d_state)
-        initial_states=repeat(self.init_states, "... -> b ...", b=batch) if self.learnable_init_states else None
+        A = -torch.exp(self.A_log)  # (nheads) or (d_inner, d_state) [nheads]
+        initial_states=repeat(self.init_states, "... -> b ...", b=batch) if self.learnable_init_states else None #[B,nheads,headdim]
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
 
         if self.use_mem_eff_path:
