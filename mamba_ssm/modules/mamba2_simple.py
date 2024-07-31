@@ -109,7 +109,7 @@ class Mamba2Simple(nn.Module):
         # self.conv1d.weight._no_weight_decay = True
 
         if self.learnable_init_states:
-            # [nheads,headdim]
+            # [nheads,headdim，d_state]
             self.init_states = nn.Parameter(torch.zeros(self.nheads, self.headdim, self.d_state, **factory_kwargs))
             self.init_states._no_weight_decay = True
 
@@ -158,7 +158,7 @@ class Mamba2Simple(nn.Module):
 
         zxbcdt = self.in_proj(u)  # (B, L, d_in_proj)
         A = -torch.exp(self.A_log)  # (nheads) or (d_inner, d_state) [nheads]
-        initial_states=repeat(self.init_states, "... -> b ...", b=batch) if self.learnable_init_states else None #[B,nheads,headdim]
+        initial_states=repeat(self.init_states, "... -> b ...", b=batch) if self.learnable_init_states else None #[B,nheads,headdim,d_state]
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
 
         if self.use_mem_eff_path:
@@ -170,7 +170,7 @@ class Mamba2Simple(nn.Module):
                 self.dt_bias,
                 A,
                 D=self.D,
-                chunk_size=self.chunk_size,
+                chunk_size=self.chunk_size,  # 
                 seq_idx=seq_idx,
                 activation=self.activation,
                 rmsnorm_weight=self.norm.weight,
@@ -207,7 +207,7 @@ class Mamba2Simple(nn.Module):
             # These correspond to V, K, Q respectively in the SSM/attention duality
             x, B, C = torch.split(xBC, [self.d_inner, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
             y = mamba_chunk_scan_combined(
-                rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
+                rearrange(x, "b l (h p) -> b l h p", p=self.headdim), # nheads = d_inner // headdim
                 dt,
                 A,
                 rearrange(B, "b l (g n) -> b l g n", g=self.ngroups),

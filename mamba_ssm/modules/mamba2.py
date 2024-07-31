@@ -64,6 +64,29 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         device=None,
         dtype=None,
     ):
+        """
+            d_model (_type_): 模型维度
+            d_state (int, optional): 状态维度. 
+            d_conv (int, optional): 卷积核大小. 
+            conv_init (_type_, optional): 
+            expand (int, optional): 扩展因子. 
+            headdim (int, optional): 单个头维度. 
+            d_ssm: 
+            ngroups (int, optional): 组数. 
+            A_init_range (tuple, optional): A矩阵值初始化范围. 
+            dt_min (float, optional): 
+            dt_max (float, optional): 
+            dt_init_floor (_type_, optional): 
+            dt_limit (tuple, optional): dt取值范围. 
+            bias (bool, optional): 
+            conv_bias (bool, optional): 
+            chunk_size (int, optional): _description_. Defaults to 256.
+            use_mem_eff_path (bool, optional): _description_. Defaults to True.
+            layer_idx (_type_, optional): _description_. Defaults to None.
+            process_group: 
+            sequence_parallel: 
+
+        """  
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
         self.d_model = d_model
@@ -73,13 +96,13 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.expand = expand
         self.process_group = process_group
         self.sequence_parallel = sequence_parallel
-        self.world_size = 1 if process_group is None else process_group.size()
-        self.local_rank = 0 if process_group is None else process_group.rank()
+        self.world_size = 1 if process_group is None else process_group.size() # 分组处理的组数
+        self.local_rank = 0 if process_group is None else process_group.rank() # 后面没用？
         self.d_inner = (self.expand * self.d_model) // self.world_size
         assert self.d_inner * self.world_size == self.expand * self.d_model
         self.headdim = headdim
         self.d_ssm = self.d_inner if d_ssm is None else d_ssm // self.world_size
-        assert ngroups % self.world_size == 0
+        assert ngroups % self.world_size == 0 # ngroups需要是world_size
         self.ngroups = ngroups // self.world_size
         assert self.d_ssm % self.headdim == 0
         self.nheads = self.d_ssm // self.headdim
@@ -230,7 +253,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             if causal_conv1d_fn is None or self.activation not in ["silu", "swish"]:
                 assert seq_idx is None, "varlen conv1d requires the causal_conv1d package"
                 xBC = self.act(
-                    self.conv1d(xBC.transpose(1, 2)).transpose(1, 2)[:, -(self.dconv - 1):]
+                    self.conv1d(xBC.transpose(1, 2)).transpose(1, 2)[:, -(self.dconv - 1):] #   ???
                 )  # (B, L, self.d_ssm + 2 * ngroups * d_state)
             else:
                 xBC = causal_conv1d_fn(
